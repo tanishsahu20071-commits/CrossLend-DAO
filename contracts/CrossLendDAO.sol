@@ -1,13 +1,4 @@
-// SPDX-License-Identifier: MIT
-pragma solidity ^0.8.0;
-
-/**
- * @title CrossLend DAO
- * @dev Decentralized Autonomous Organization for cross-chain lending governance
- */
-contract CrossLendDAO {
-    
-    // Structs
+Structs
     struct Proposal {
         uint256 id;
         address proposer;
@@ -33,19 +24,7 @@ contract CrossLendDAO {
         bool isActive;
     }
     
-    // State variables
-    address public owner;
-    uint256 public proposalCount;
-    uint256 public memberCount;
-    uint256 public totalVotingPower;
-    uint256 public constant VOTING_PERIOD = 7 days;
-    uint256 public constant MIN_VOTING_POWER = 100;
-    
-    mapping(uint256 => Proposal) public proposals;
-    mapping(address => Member) public members;
-    mapping(uint256 => LendingPool) public lendingPools;
-    
-    // Events
+    Events
     event MemberJoined(address indexed member, uint256 votingPower);
     event ProposalCreated(uint256 indexed proposalId, address indexed proposer, string description);
     event VoteCasted(uint256 indexed proposalId, address indexed voter, bool support, uint256 votingPower);
@@ -53,122 +32,7 @@ contract CrossLendDAO {
     event LiquidityAdded(uint256 indexed poolId, address indexed provider, uint256 amount);
     event LiquidityRemoved(uint256 indexed poolId, address indexed provider, uint256 amount);
     
-    // Modifiers
-    modifier onlyOwner() {
-        require(msg.sender == owner, "Only owner can call this function");
-        _;
-    }
-    
-    modifier onlyMember() {
-        require(members[msg.sender].isActive, "Only active members can call this function");
-        _;
-    }
-    
-    constructor() {
-        owner = msg.sender;
-        members[msg.sender] = Member({
-            votingPower: 1000,
-            joinedAt: block.timestamp,
-            isActive: true
-        });
-        memberCount = 1;
-        totalVotingPower = 1000;
-    }
-    
-    /**
-     * @dev Function 1: Join the DAO as a member
-     * @param _votingPower Initial voting power for the member
-     */
-    function joinDAO(uint256 _votingPower) external {
-        require(!members[msg.sender].isActive, "Already a member");
-        require(_votingPower >= MIN_VOTING_POWER, "Voting power too low");
-        
-        members[msg.sender] = Member({
-            votingPower: _votingPower,
-            joinedAt: block.timestamp,
-            isActive: true
-        });
-        
-        memberCount++;
-        totalVotingPower += _votingPower;
-        
-        emit MemberJoined(msg.sender, _votingPower);
-    }
-    
-    /**
-     * @dev Function 2: Create a new proposal
-     * @param _description Description of the proposal
-     */
-    function createProposal(string memory _description) external onlyMember returns (uint256) {
-        proposalCount++;
-        
-        Proposal storage newProposal = proposals[proposalCount];
-        newProposal.id = proposalCount;
-        newProposal.proposer = msg.sender;
-        newProposal.description = _description;
-        newProposal.startTime = block.timestamp;
-        newProposal.endTime = block.timestamp + VOTING_PERIOD;
-        newProposal.executed = false;
-        
-        emit ProposalCreated(proposalCount, msg.sender, _description);
-        
-        return proposalCount;
-    }
-    
-    /**
-     * @dev Function 3: Vote on a proposal
-     * @param _proposalId ID of the proposal
-     * @param _support True for yes, false for no
-     */
-    function vote(uint256 _proposalId, bool _support) external onlyMember {
-        Proposal storage proposal = proposals[_proposalId];
-        
-        require(block.timestamp >= proposal.startTime, "Voting has not started");
-        require(block.timestamp <= proposal.endTime, "Voting has ended");
-        require(!proposal.hasVoted[msg.sender], "Already voted");
-        require(!proposal.executed, "Proposal already executed");
-        
-        uint256 votingPower = members[msg.sender].votingPower;
-        
-        if (_support) {
-            proposal.forVotes += votingPower;
-        } else {
-            proposal.againstVotes += votingPower;
-        }
-        
-        proposal.hasVoted[msg.sender] = true;
-        
-        emit VoteCasted(_proposalId, msg.sender, _support, votingPower);
-    }
-    
-    /**
-     * @dev Function 4: Execute a proposal after voting period
-     * @param _proposalId ID of the proposal
-     */
-    function executeProposal(uint256 _proposalId) external onlyMember {
-        Proposal storage proposal = proposals[_proposalId];
-        
-        require(block.timestamp > proposal.endTime, "Voting period not ended");
-        require(!proposal.executed, "Proposal already executed");
-        
-        bool passed = proposal.forVotes > proposal.againstVotes;
-        proposal.executed = true;
-        
-        emit ProposalExecuted(_proposalId, passed);
-    }
-    
-    /**
-     * @dev Function 5: Add liquidity to a lending pool
-     * @param _poolId ID of the lending pool
-     */
-    function addLiquidity(uint256 _poolId) external payable {
-        require(msg.value > 0, "Must send ETH");
-        
-        LendingPool storage pool = lendingPools[_poolId];
-        
-        if (!pool.isActive) {
-            pool.isActive = true;
-            pool.interestRate = 5; // 5% default interest rate
+    5% default interest rate
         }
         
         pool.totalLiquidity += msg.value;
@@ -269,3 +133,6 @@ contract CrossLendDAO {
         );
     }
 }
+// 
+End
+// 
