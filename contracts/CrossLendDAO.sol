@@ -1,138 +1,179 @@
-Structs
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.21;
+
+/**
+ * @title CrossLend DAO
+ * @notice A cross-chain-ready lending protocol with DAO governance
+ *         - Deposit ERC20 collateral
+ *         - Borrow stablecoins
+ *         - Interest accrual
+ *         - DAO voting for protocol parameters
+ *         - Chain ID tracking for cross-chain expansion
+ */
+
+interface IERC20 {
+    function transfer(address to, uint256 val) external returns (bool);
+    function transferFrom(address from, address to, uint256 val) external returns (bool);
+    function balanceOf(address user) external view returns (uint256);
+}
+
+contract CrossLendDAO {
+    address public owner;
+    uint256 public protocolInterestRate = 5; // 5% annual for simplicity
+
+    struct Loan {
+        address borrower;
+        address collateralToken;
+        uint256 collateralAmount;
+        address borrowToken;
+        uint256 borrowAmount;
+        uint256 startBlock;
+        bool active;
+        uint256 chainId; // multi-chain extension
+    }
+
     struct Proposal {
         uint256 id;
-        address proposer;
         string description;
-        uint256 forVotes;
-        uint256 againstVotes;
-        uint256 startTime;
-        uint256 endTime;
+        uint256 voteFor;
+        uint256 voteAgainst;
+        uint256 startBlock;
+        uint256 endBlock;
         bool executed;
-        mapping(address => bool) hasVoted;
     }
-    
-    struct Member {
-        uint256 votingPower;
-        uint256 joinedAt;
-        bool isActive;
+
+    uint256 public loanCount;
+    uint256 public proposalCount;
+
+    mapping(uint256 => Loan) public loans;
+    mapping(address => uint256[]) public userLoans;
+
+    mapping(uint256 => Proposal) public proposals;
+    mapping(uint256 => mapping(address => bool)) public voted; // proposalID => voter => voted
+
+    event LoanCreated(uint256 indexed id, address borrower, address collateralToken, uint256 collateralAmount, address borrowToken, uint256 borrowAmount);
+    event LoanRepaid(uint256 indexed id, address borrower, uint256 repayAmount);
+    event ProposalCreated(uint256 indexed id, string description, uint256 startBlock, uint256 endBlock);
+    event Voted(uint256 indexed proposalId, address voter, bool support);
+    event ProposalExecuted(uint256 indexed id, bool approved);
+
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Not owner");
+        _;
     }
-    
-    struct LendingPool {
-        uint256 totalLiquidity;
-        uint256 availableLiquidity;
-        uint256 interestRate;
-        bool isActive;
+
+    constructor() {
+        owner = msg.sender;
     }
-    
-    Events
-    event MemberJoined(address indexed member, uint256 votingPower);
-    event ProposalCreated(uint256 indexed proposalId, address indexed proposer, string description);
-    event VoteCasted(uint256 indexed proposalId, address indexed voter, bool support, uint256 votingPower);
-    event ProposalExecuted(uint256 indexed proposalId, bool passed);
-    event LiquidityAdded(uint256 indexed poolId, address indexed provider, uint256 amount);
-    event LiquidityRemoved(uint256 indexed poolId, address indexed provider, uint256 amount);
-    
-    5% default interest rate
+
+    // ------------------------------------------------
+    // LOAN FUNCTIONS
+    // ------------------------------------------------
+    function createLoan(
+        address collateralToken,
+        uint256 collateralAmount,
+        address borrowToken,
+        uint256 borrowAmount,
+        uint256 chainId
+    ) external returns (uint256) {
+        require(collateralAmount > 0 && borrowAmount > 0, "Invalid amounts");
+        IERC20(collateralToken).transferFrom(msg.sender, address(this), collateralAmount);
+
+        loanCount++;
+        loans[loanCount] = Loan({
+            borrower: msg.sender,
+            collateralToken: collateralToken,
+            collateralAmount: collateralAmount,
+            borrowToken: borrowToken,
+            borrowAmount: borrowAmount,
+            startBlock: block.number,
+            active: true,
+            chainId: chainId
+        });
+
+        userLoans[msg.sender].push(loanCount);
+
+        IERC20(borrowToken).transfer(msg.sender, borrowAmount);
+
+        emit LoanCreated(loanCount, msg.sender, collateralToken, collateralAmount, borrowToken, borrowAmount);
+        return loanCount;
+    }
+
+    function repayLoan(uint256 loanId) external {
+        Loan storage l = loans[loanId];
+        require(l.active, "Loan inactive");
+        require(l.borrower == msg.sender, "Not borrower");
+
+        // simple interest: borrowAmount * interestRate * blocksPassed / 100 / blocksPerYear
+        uint256 blocksPassed = block.number - l.startBlock;
+        uint256 repayAmount = l.borrowAmount + (l.borrowAmount * protocolInterestRate * blocksPassed / (100 * 2102400)); // approx 2102400 blocks/year
+
+        IERC20(l.borrowToken).transferFrom(msg.sender, address(this), repayAmount);
+        IERC20(l.collateralToken).transfer(msg.sender, l.collateralAmount);
+
+        l.active = false;
+        emit LoanRepaid(loanId, msg.sender, repayAmount);
+    }
+
+    // ------------------------------------------------
+    // DAO GOVERNANCE FUNCTIONS
+    // ------------------------------------------------
+    function createProposal(string memory description, uint256 durationBlocks) external returns (uint256) {
+        proposalCount++;
+        proposals[proposalCount] = Proposal({
+            id: proposalCount,
+            description: description,
+            voteFor: 0,
+            voteAgainst: 0,
+            startBlock: block.number,
+            endBlock: block.number + durationBlocks,
+            executed: false
+        });
+
+        emit ProposalCreated(proposalCount, description, block.number, block.number + durationBlocks);
+        return proposalCount;
+    }
+
+    function vote(uint256 proposalId, bool support) external {
+        Proposal storage p = proposals[proposalId];
+        require(block.number >= p.startBlock && block.number <= p.endBlock, "Voting closed");
+        require(!voted[proposalId][msg.sender], "Already voted");
+
+        voted[proposalId][msg.sender] = true;
+        if (support) {
+            p.voteFor += 1;
+        } else {
+            p.voteAgainst += 1;
         }
-        
-        pool.totalLiquidity += msg.value;
-        pool.availableLiquidity += msg.value;
-        
-        emit LiquidityAdded(_poolId, msg.sender, msg.value);
+
+        emit Voted(proposalId, msg.sender, support);
     }
-    
-    /**
-     * @dev Function 6: Remove liquidity from a lending pool
-     * @param _poolId ID of the lending pool
-     * @param _amount Amount to withdraw
-     */
-    function removeLiquidity(uint256 _poolId, uint256 _amount) external onlyMember {
-        LendingPool storage pool = lendingPools[_poolId];
-        
-        require(pool.isActive, "Pool not active");
-        require(_amount <= pool.availableLiquidity, "Insufficient liquidity");
-        
-        pool.availableLiquidity -= _amount;
-        pool.totalLiquidity -= _amount;
-        
-        payable(msg.sender).transfer(_amount);
-        
-        emit LiquidityRemoved(_poolId, msg.sender, _amount);
+
+    function executeProposal(uint256 proposalId) external {
+        Proposal storage p = proposals[proposalId];
+        require(block.number > p.endBlock, "Voting not ended");
+        require(!p.executed, "Already executed");
+
+        bool approved = p.voteFor > p.voteAgainst;
+        if (approved) {
+            // Implement actual changes: interest rate update, new collateral type, etc.
+        }
+
+        p.executed = true;
+        emit ProposalExecuted(proposalId, approved);
     }
-    
-    /**
-     * @dev Function 7: Update member voting power
-     * @param _member Address of the member
-     * @param _newVotingPower New voting power
-     */
-    function updateVotingPower(address _member, uint256 _newVotingPower) external onlyOwner {
-        require(members[_member].isActive, "Member not active");
-        
-        uint256 oldPower = members[_member].votingPower;
-        members[_member].votingPower = _newVotingPower;
-        
-        totalVotingPower = totalVotingPower - oldPower + _newVotingPower;
+
+    // ------------------------------------------------
+    // VIEWERS
+    // ------------------------------------------------
+    function getUserLoans(address user) external view returns (uint256[] memory) {
+        return userLoans[user];
     }
-    
-    /**
-     * @dev Function 8: Get proposal details
-     * @param _proposalId ID of the proposal
-     */
-    function getProposal(uint256 _proposalId) external view returns (
-        uint256 id,
-        address proposer,
-        string memory description,
-        uint256 forVotes,
-        uint256 againstVotes,
-        uint256 startTime,
-        uint256 endTime,
-        bool executed
-    ) {
-        Proposal storage proposal = proposals[_proposalId];
-        return (
-            proposal.id,
-            proposal.proposer,
-            proposal.description,
-            proposal.forVotes,
-            proposal.againstVotes,
-            proposal.startTime,
-            proposal.endTime,
-            proposal.executed
-        );
-    }
-    
-    /**
-     * @dev Function 9: Get member details
-     * @param _member Address of the member
-     */
-    function getMember(address _member) external view returns (
-        uint256 votingPower,
-        uint256 joinedAt,
-        bool isActive
-    ) {
-        Member storage member = members[_member];
-        return (member.votingPower, member.joinedAt, member.isActive);
-    }
-    
-    /**
-     * @dev Function 10: Get lending pool details
-     * @param _poolId ID of the lending pool
-     */
-    function getLendingPool(uint256 _poolId) external view returns (
-        uint256 totalLiquidity,
-        uint256 availableLiquidity,
-        uint256 interestRate,
-        bool isActive
-    ) {
-        LendingPool storage pool = lendingPools[_poolId];
-        return (
-            pool.totalLiquidity,
-            pool.availableLiquidity,
-            pool.interestRate,
-            pool.isActive
-        );
+
+    function pendingInterest(uint256 loanId) external view returns (uint256) {
+        Loan storage l = loans[loanId];
+        if (!l.active) return 0;
+        uint256 blocksPassed = block.number - l.startBlock;
+        return (l.borrowAmount * protocolInterestRate * blocksPassed / (100 * 2102400));
     }
 }
-// 
-End
-// 
