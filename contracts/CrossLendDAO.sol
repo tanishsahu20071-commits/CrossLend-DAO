@@ -1,86 +1,128 @@
-5% annual for simplicity
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.26;
 
-    struct Loan {
+/**
+ * @title CrossLend DAO
+ * @notice A decentralized lending DAO where members can submit lending proposals,
+ *         vote, and approve funds for borrowers in a democratic, trustless manner.
+ */
+
+interface IERC20 {
+    function transfer(address to, uint256 amount) external returns (bool);
+}
+
+contract CrossLendDAO {
+    address public owner;
+    IERC20 public lendingToken;
+
+    struct Member {
+        bool isMember;
+    }
+
+    struct Proposal {
+        uint256 id;
+        address proposer;
         address borrower;
-        address collateralToken;
-        uint256 collateralAmount;
-        address borrowToken;
-        uint256 borrowAmount;
-        uint256 startBlock;
-        bool active;
-        uint256 chainId; proposalID => voter => voted
+        uint256 amount;
+        uint256 votesFor;
+        uint256 votesAgainst;
+        uint256 deadline;
+        bool executed;
+    }
 
-    event LoanCreated(uint256 indexed id, address borrower, address collateralToken, uint256 collateralAmount, address borrowToken, uint256 borrowAmount);
-    event LoanRepaid(uint256 indexed id, address borrower, uint256 repayAmount);
-    event ProposalCreated(uint256 indexed id, string description, uint256 startBlock, uint256 endBlock);
+    uint256 public proposalCount;
+    mapping(address => Member) public members;
+    mapping(uint256 => Proposal) public proposals;
+    mapping(uint256 => mapping(address => bool)) public hasVoted;
+
+    event MemberAdded(address indexed member);
+    event ProposalCreated(uint256 indexed proposalId, address proposer, address borrower, uint256 amount);
     event Voted(uint256 indexed proposalId, address voter, bool support);
-    event ProposalExecuted(uint256 indexed id, bool approved);
+    event ProposalExecuted(uint256 indexed proposalId, bool success);
 
     modifier onlyOwner() {
-        require(msg.sender == owner, "Not owner");
+        require(msg.sender == owner, "Not authorized");
         _;
     }
 
-    constructor() {
-        owner = msg.sender;
+    modifier onlyMember() {
+        require(members[msg.sender].isMember, "Not a DAO member");
+        _;
     }
 
-    LOAN FUNCTIONS
-    simple interest: borrowAmount * interestRate * blocksPassed / 100 / blocksPerYear
-        uint256 blocksPassed = block.number - l.startBlock;
-        uint256 repayAmount = l.borrowAmount + (l.borrowAmount * protocolInterestRate * blocksPassed / (100 * 2102400)); ------------------------------------------------
-    ------------------------------------------------
-    function createProposal(string memory description, uint256 durationBlocks) external returns (uint256) {
+    constructor(address _lendingToken) {
+        owner = msg.sender;
+        lendingToken = IERC20(_lendingToken);
+    }
+
+    /** Add a new DAO member */
+    function addMember(address newMember) external onlyOwner {
+        require(newMember != address(0), "Invalid address");
+        members[newMember].isMember = true;
+        emit MemberAdded(newMember);
+    }
+
+    /** Create a lending proposal */
+    function createProposal(address borrower, uint256 amount, uint256 votingDuration) external onlyMember {
+        require(borrower != address(0), "Invalid borrower");
+        require(amount > 0, "Amount > 0");
+
         proposalCount++;
         proposals[proposalCount] = Proposal({
             id: proposalCount,
-            description: description,
-            voteFor: 0,
-            voteAgainst: 0,
-            startBlock: block.number,
-            endBlock: block.number + durationBlocks,
+            proposer: msg.sender,
+            borrower: borrower,
+            amount: amount,
+            votesFor: 0,
+            votesAgainst: 0,
+            deadline: block.timestamp + votingDuration,
             executed: false
         });
 
-        emit ProposalCreated(proposalCount, description, block.number, block.number + durationBlocks);
-        return proposalCount;
+        emit ProposalCreated(proposalCount, msg.sender, borrower, amount);
     }
 
-    function vote(uint256 proposalId, bool support) external {
-        Proposal storage p = proposals[proposalId];
-        require(block.number >= p.startBlock && block.number <= p.endBlock, "Voting closed");
-        require(!voted[proposalId][msg.sender], "Already voted");
+    /** Vote on a proposal */
+    function vote(uint256 proposalId, bool support) external onlyMember {
+        Proposal storage proposal = proposals[proposalId];
+        require(block.timestamp <= proposal.deadline, "Voting ended");
+        require(!hasVoted[proposalId][msg.sender], "Already voted");
 
-        voted[proposalId][msg.sender] = true;
+        hasVoted[proposalId][msg.sender] = true;
+
         if (support) {
-            p.voteFor += 1;
+            proposal.votesFor++;
         } else {
-            p.voteAgainst += 1;
+            proposal.votesAgainst++;
         }
 
         emit Voted(proposalId, msg.sender, support);
     }
 
-    function executeProposal(uint256 proposalId) external {
-        Proposal storage p = proposals[proposalId];
-        require(block.number > p.endBlock, "Voting not ended");
-        require(!p.executed, "Already executed");
+    /** Execute proposal if majority votes in favor */
+    function executeProposal(uint256 proposalId) external onlyMember {
+        Proposal storage proposal = proposals[proposalId];
+        require(block.timestamp > proposal.deadline, "Voting not ended");
+        require(!proposal.executed, "Already executed");
 
-        bool approved = p.voteFor > p.voteAgainst;
-        if (approved) {
-            ------------------------------------------------
-    ------------------------------------------------
-    function getUserLoans(address user) external view returns (uint256[] memory) {
-        return userLoans[user];
+        proposal.executed = true;
+
+        bool approved = proposal.votesFor > proposal.votesAgainst;
+
+        if (approved && lendingToken.transfer(proposal.borrower, proposal.amount)) {
+            emit ProposalExecuted(proposalId, true);
+        } else {
+            emit ProposalExecuted(proposalId, false);
+        }
     }
 
-    function pendingInterest(uint256 loanId) external view returns (uint256) {
-        Loan storage l = loans[loanId];
-        if (!l.active) return 0;
-        uint256 blocksPassed = block.number - l.startBlock;
-        return (l.borrowAmount * protocolInterestRate * blocksPassed / (100 * 2102400));
+    /** View DAO member status */
+    function isMember(address addr) external view returns (bool) {
+        return members[addr].isMember;
+    }
+
+    /** Get proposal details */
+    function getProposal(uint256 proposalId) external view returns (Proposal memory) {
+        return proposals[proposalId];
     }
 }
-// 
-Contract End
-// 
